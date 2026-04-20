@@ -42,7 +42,7 @@ jobs:
           ndk-version: ${{ env.NDK_VERSION }}
 
       - name: Install cargo-ndk
-        run: cargo install cargo-ndk
+        run: cargo install cargo-ndk --version 3.5.4
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
