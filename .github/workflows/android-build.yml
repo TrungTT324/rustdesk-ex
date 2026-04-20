@@ -1,0 +1,64 @@
+name: Build RustDesk Android Debug APK
+
+on:
+  workflow_dispatch: # Chạy thủ công từ tab Actions
+
+env:
+  RUST_VERSION: "1.75"
+  FLUTTER_VERSION: "3.24.5"
+  NDK_VERSION: "r28c"
+
+jobs:
+  build-debug:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Java
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: aarch64-linux-android # Build cho điện thoại hiện đại (64-bit)
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Rust Library
+        run: |
+          # Build library cho kiến trúc arm64
+          cargo ndk -t aarch64-linux-android build --features flutter,hwcodec
+
+      - name: Build Flutter Debug APK
+        run: |
+          cd flutter
+          flutter build apk --debug --target-platform android-arm64
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustdesk-debug-arm64.apk
+          path: flutter/build/app/outputs/flutter-apk/app-debug.apk
