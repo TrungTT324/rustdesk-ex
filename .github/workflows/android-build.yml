@@ -1,42 +1,43 @@
-name: Build RustDesk Android Debug APK
+name: Build RustDesk Android (Follow Original)
 
 on:
-  workflow_dispatch: # Chạy thủ công từ tab Actions
+  workflow_dispatch:
 
 env:
+  # Copy chuẩn từ file gốc của bạn
   RUST_VERSION: "1.75"
   FLUTTER_VERSION: "3.24.5"
+  LLVM_VERSION: "15.0.6"
   NDK_VERSION: "r28c"
+  CARGO_NDK_VERSION: "3.1.2"
 
 jobs:
-  build-debug:
+  build:
     runs-on: ubuntu-latest
-    
     steps:
-      - name: Checkout source code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Setup Java
-        uses: actions/setup-java@v3
+      # Quan trọng: Cài đặt LLVM đúng phiên bản 15.0.6 như file gốc
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@v1
         with:
-          distribution: 'zulu'
-          java-version: '17'
+          version: ${{ env.LLVM_VERSION }}
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential gcc-multilib g++-multilib
-          
       - name: Install Rust
         uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
-          targets: aarch64-linux-android # Build cho điện thoại hiện đại (64-bit)
-      
-      - name: Add Android Target
-        run: rustup target add aarch64-linux-android
+          targets: aarch64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }}
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
 
       - name: Install Flutter
         uses: subosito/flutter-action@v2
@@ -44,29 +45,18 @@ jobs:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
 
-      - name: Setup Android NDK
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: ${{ env.NDK_VERSION }}
-
-      - name: Install cargo-ndk
-        run: cargo install cargo-ndk --version 3.1.2 --locked
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-
+      # Build phần Rust (như cách build.py làm)
       - name: Build Rust Library
         run: |
-          # Build library cho kiến trúc arm64
-          cargo ndk -t aarch64-linux-android build --features flutter,hwcodec
+          cargo ndk -t aarch64-linux-android build --features flutter,hwcodec --release
 
-      - name: Build Flutter Debug APK
+      - name: Build Android APK
         run: |
           cd flutter
-          flutter build apk --debug --target-platform android-arm64
+          flutter build apk --release --target-platform android-arm64
 
-      - name: Upload Debug APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: rustdesk-debug-arm64.apk
-          path: flutter/build/app/outputs/flutter-apk/app-debug.apk
+          name: rustdesk-release.apk
+          path: flutter/build/app/outputs/flutter-apk/app-release.apk
