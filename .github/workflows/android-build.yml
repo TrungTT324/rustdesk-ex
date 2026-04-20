@@ -29,6 +29,9 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
           targets: aarch64-linux-android # Build cho điện thoại hiện đại (64-bit)
+      
+      - name: Add Android Target
+        run: rustup target add aarch64-linux-android
 
       - name: Install Flutter
         uses: subosito/flutter-action@v2
