@@ -1,25 +1,24 @@
-name: Build RustDesk Android (Follow Original)
+name: Build RustDesk Android (Custom)
 
 on:
   workflow_dispatch:
 
 env:
-  # Copy chuẩn từ file gốc của bạn
-  RUST_VERSION: "1.75"
-  FLUTTER_VERSION: "3.24.5"
-  LLVM_VERSION: "15.0.6"
+  RUST_VERSION: "stable"          # hoặc "1.82" 
+  FLUTTER_VERSION: "3.24.5"       # giữ nếu bạn muốn ổn định
+  LLVM_VERSION: "17"              # thử 17 hoặc 18 thay vì 15.0.6
   NDK_VERSION: "r28c"
   CARGO_NDK_VERSION: "3.1.2"
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      # Quan trọng: Cài đặt LLVM đúng phiên bản 15.0.6 như file gốc
       - name: Install LLVM and Clang
         uses: KyleMayes/install-llvm-action@v1
         with:
@@ -30,6 +29,7 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
           targets: aarch64-linux-android
+          # components: rustfmt, clippy   # nếu cần
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }}
@@ -38,25 +38,42 @@ jobs:
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
 
-      - name: Install Flutter
+      - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: "stable"
+          channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
 
-      # Build phần Rust (như cách build.py làm)
-      - name: Build Rust Library
+      # === Cải tiến quan trọng: Set environment variables ===
+      - name: Setup Build Environment
+        run: |
+          echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+          echo "LLVM_HOME=${{ env.LLVM_PATH }}" >> $GITHUB_ENV   # tùy action llvm trả về
+          echo "PATH=$PATH:${{ env.ANDROID_NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_ENV
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Rust Library (aarch64)
         run: |
           cargo ndk -t aarch64-linux-android build --features flutter,hwcodec --release
 
+      # Nếu muốn hỗ trợ thêm armv7 (cũ):
+      # - name: Build Rust Library (armv7)
+      #   run: cargo ndk -t armv7-linux-androideabi build --features flutter,hwcodec --release
+
       - name: Build Android APK
+        working-directory: flutter
         run: |
-          cd flutter
+          flutter pub get
           flutter build apk --release --target-platform android-arm64
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: rustdesk-release.apk
+          name: rustdesk-android-arm64-release
           path: flutter/build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 30
