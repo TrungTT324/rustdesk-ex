@@ -1,14 +1,15 @@
-name: Windows build of he RustDesk
-
+name: Build Windows of the RustDesk
 on:
-  workflow_call:
-    inputs:
-      upload-artifact:
-        type: boolean
-        default: true
-      upload-tag:
-        type: string
-        default: "nightly"
+  workflow_dispatch:
+# on:
+#   workflow_call:
+#     inputs:
+#       upload-artifact:
+#         type: boolean
+#         default: true
+#       upload-tag:
+#         type: string
+#         default: "nightly"
 
 # NOTE: F-Droid builder script 'flutter/build_fdroid.sh' reads environment
 # variables from this workflow!
