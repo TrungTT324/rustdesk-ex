@@ -1,4 +1,4 @@
-name: Build RustDesk Android (Custom for 10k devices)
+name: Build RustDesk Android 
 
 on:
   workflow_dispatch:
@@ -320,11 +320,11 @@ jobs:
           files: |
             ${{steps.sign-rustdesk.outputs.signedReleaseFile}}
 
-      - name: Publish unsigned apk package
-        if: env.ANDROID_SIGNING_KEY == null && env.UPLOAD_ARTIFACT == 'true'
-        uses: softprops/action-gh-release@v1
-        with:
-          prerelease: true
-          tag_name: ${{ env.TAG_NAME }}
-          files: |
-            signed-apk/rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.apk
+      # - name: Publish unsigned apk package
+      #   if: env.ANDROID_SIGNING_KEY == null && env.UPLOAD_ARTIFACT == 'true'
+      #   uses: softprops/action-gh-release@v1
+      #   with:
+      #     prerelease: true
+      #     tag_name: ${{ env.TAG_NAME }}
+      #     files: |
+      #       signed-apk/rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.apk
