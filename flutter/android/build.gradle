@@ -14,6 +14,20 @@ subprojects {
     project.evaluationDependsOn(':app')
 }
 
+// Fix: set namespace for legacy plugins that lack it (required by AGP 8.x)
+subprojects {
+    plugins.withId("com.android.library") {
+        def manifestFile = project.file("src/main/AndroidManifest.xml")
+        def ns = manifestFile.exists() ?
+            new groovy.xml.XmlParser().parse(manifestFile).attribute("package") : null
+        if (!android.namespace) {
+            android.namespace = ns ?: project.group
+        }
+    }
+}
+
+
+
 tasks.register("clean", Delete) {
     delete rootProject.buildDir
 }
