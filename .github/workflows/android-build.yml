@@ -12,7 +12,7 @@ env:
   SCITER_NASM_DEBVERSION: "2.15.05-1"
   LLVM_VERSION: "15.0.6"
   FLUTTER_VERSION: "3.24.5"
-  ANDROID_FLUTTER_VERSION: "3.24.5"
+  ANDROID_FLUTTER_VERSION: "3.41.7" # must match FLUTTER_VERSION in bridge.yml: pubspec.yaml deps need Dart >=3.10/3.11
   # for arm64 linux because official Dart SDK does not work
   FLUTTER_ELINUX_VERSION: "3.16.9"
   # TAG_NAME: "${{ inputs.upload-tag }}"
@@ -136,7 +136,9 @@ jobs:
       - name: Patch flutter
         run: |
           cd $(dirname $(dirname $(which flutter)))
-          [[ "3.24.5" == ${{env.ANDROID_FLUTTER_VERSION}} ]] && git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
+          if [[ "${{ env.ANDROID_FLUTTER_VERSION }}" == "3.24.5" ]]; then
+            git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
+          fi
 
       - uses: nttld/setup-ndk@v1
         id: setup-ndk

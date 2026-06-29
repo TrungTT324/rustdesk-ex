@@ -7,7 +7,7 @@ on:
 
 env:
   CARGO_EXPAND_VERSION: "1.0.95"
-  FLUTTER_VERSION: "3.24.5" # bumped from 3.22.3: Dart 3.4.4 can't resolve sqflite ^2.4.2+1 (needs Dart >=3.5.0)
+  FLUTTER_VERSION: "3.41.7" # must match ANDROID_FLUTTER_VERSION in android-build.yml: pubspec.yaml deps (sqflite, extended_text, google_fonts, flutter_plugin_android_lifecycle) require Dart >=3.10/3.11, only available from this Flutter version onward
   FLUTTER_RUST_BRIDGE_VERSION: "1.80.1"
   RUST_VERSION: "1.75" # https://github.com/rustdesk/rustdesk/discussions/7503
 
