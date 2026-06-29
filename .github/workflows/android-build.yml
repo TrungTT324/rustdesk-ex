@@ -3,6 +3,9 @@ name: Build RustDesk Android
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write # required by softprops/action-gh-release@v1 to create/upload releases
+
 env:
   SCITER_RUST_VERSION: "1.75" # https://github.com/rustdesk/rustdesk/discussions/7503, also 1.78 has ABI change which causes our sciter version not working, https://blog.rust-lang.org/2024/03/30/i128-layout-update.html
   RUST_VERSION: "1.75" # sciter failed on m1 with 1.78 because of https://blog.rust-lang.org/2024/03/30/i128-layout-update.html
@@ -16,7 +19,7 @@ env:
   # for arm64 linux because official Dart SDK does not work
   FLUTTER_ELINUX_VERSION: "3.16.9"
   # TAG_NAME: "${{ inputs.upload-tag }}"
-  TAG_NAME: "releae 1.0.0"
+  TAG_NAME: "release-1.0.0" # tag/ref names can't contain spaces
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
   # vcpkg version: 2025.08.27
   # If we change the `VCPKG COMMIT_ID`, please remember:
