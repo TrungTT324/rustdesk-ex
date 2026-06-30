@@ -11,14 +11,11 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  RUST_VERSION: "1.75"
-  CARGO_NDK_VERSION: "3.1.2"
   ANDROID_FLUTTER_VERSION: "3.41.7" # must match FLUTTER_VERSION in bridge.yml
   TAG_NAME: "fast-build-armv7"
-  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
-  VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
+  RUST_LIB_TAG_NAME: "rust-lib-android" # published by rust-lib-android.yml; run it first after any Rust/hbb_common change
+  RUST_LIB_TARGET: "armv7-linux-androideabi"
   VERSION: "1.4.6"
-  NDK_VERSION: "r28c"
   ANDROID_SIGNING_KEY: "${{ secrets.ANDROID_SIGNING_KEY }}"
   UPLOAD_ARTIFACT: "true"
 
@@ -31,16 +28,8 @@ jobs:
     name: build rustdesk android apk armv7-linux-androideabi (fast)
     runs-on: ubuntu-24.04
     steps:
-      - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: false
-          dotnet: true
-          haskell: true
-          large-packages: false
-          docker-images: true
-          swap-storage: false
+      # no Free Disk Space step here: without vcpkg/NDK/Rust toolchain this job's
+      # disk footprint is small (just Flutter SDK + Gradle), so it's not needed.
 
       - name: Export GitHub Actions cache environment variables
         uses: actions/github-script@v6
@@ -52,37 +41,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-               clang \
-               cmake \
-               curl \
-               gcc-multilib \
-               git \
-               g++ \
-               g++-multilib \
-               libayatana-appindicator3-dev \
-               libasound2-dev \
-               libc6-dev \
-               libclang-dev \
-               libunwind-dev \
-               libgstreamer1.0-dev \
-               libgstreamer-plugins-base1.0-dev \
-               libgtk-3-dev \
-               libpam0g-dev \
-               libpulse-dev \
-               libva-dev \
-               libxcb-randr0-dev \
-               libxcb-shape0-dev \
-               libxcb-xfixes0-dev \
-               libxdo-dev \
-               libxfixes-dev \
-               llvm-dev \
-               nasm \
-               ninja-build \
-               openjdk-17-jdk-headless \
-               pkg-config \
-               tree \
-               wget
+          sudo apt-get install -y openjdk-17-jdk-headless
 
       - name: Checkout source code
         uses: actions/checkout@v4
@@ -95,63 +54,30 @@ jobs:
           channel: "stable"
           flutter-version: ${{ env.ANDROID_FLUTTER_VERSION }}
 
-      - uses: nttld/setup-ndk@v1
-        id: setup-ndk
-        with:
-          ndk-version: ${{ env.NDK_VERSION }}
-          add-to-path: true
-
-      - name: Setup vcpkg with Github Actions binary cache
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgDirectory: /opt/artifacts/vcpkg
-          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
-          doNotCache: false
-
-      - name: Install vcpkg dependencies
-        run: |
-          if ! ./flutter/build_android_deps.sh "armeabi-v7a"; then
-            find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
-              echo "$_1:"
-              echo "======"
-              cat "$_1"
-              echo "======"
-              echo ""
-            done
-            exit 1
-          fi
-        shell: bash
-
       - name: Restore bridge files
         uses: actions/download-artifact@master
         with:
           name: bridge-artifact
           path: ./
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-          components: "rustfmt"
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: rustdesk-lib-cache-android
-          key: armv7-linux-androideabi
-
       # speeds up the Gradle phase: caches ~/.gradle and the build cache across runs
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Build rustdesk lib
+      - name: Download prebuilt Rust library
         env:
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          rustup target add armv7-linux-androideabi
-          cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }} --locked
-          ./flutter/ndk_arm.sh
+          echo "Using prebuilt library from release '${{ env.RUST_LIB_TAG_NAME }}':"
+          gh release view "${{ env.RUST_LIB_TAG_NAME }}" -R "${{ github.repository }}" --json body -q .body
+          echo "(verify the source commit above still matches src/ before trusting this build)"
+          mkdir -p ./prebuilt-lib
+          gh release download "${{ env.RUST_LIB_TAG_NAME }}" -R "${{ github.repository }}" \
+            -p "librustdesk-${{ env.RUST_LIB_TARGET }}.so" \
+            -p "libcxx_shared-${{ env.RUST_LIB_TARGET }}.so" \
+            -D ./prebuilt-lib --clobber
           mkdir -p ./flutter/android/app/src/main/jniLibs/armeabi-v7a
-          cp ./target/armv7-linux-androideabi/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/armeabi-v7a/librustdesk.so
+          cp ./prebuilt-lib/librustdesk-${{ env.RUST_LIB_TARGET }}.so ./flutter/android/app/src/main/jniLibs/armeabi-v7a/librustdesk.so
+          cp ./prebuilt-lib/libcxx_shared-${{ env.RUST_LIB_TARGET }}.so ./flutter/android/app/src/main/jniLibs/armeabi-v7a/libc++_shared.so
 
       - name: Build rustdesk
         shell: bash
@@ -165,9 +91,7 @@ jobs:
           grep -q "^org.gradle.caching=" ./flutter/android/gradle.properties || echo "org.gradle.caching=true" >> ./flutter/android/gradle.properties
           # temporary use debug sign config
           sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
-          mkdir -p ./flutter/android/app/src/main/jniLibs/armeabi-v7a
-          cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/arm-linux-androideabi/libc++_shared.so ./flutter/android/app/src/main/jniLibs/armeabi-v7a/
-          cp ./target/armv7-linux-androideabi/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/armeabi-v7a/librustdesk.so
+          # librustdesk.so and libc++_shared.so were already placed in jniLibs/armeabi-v7a by the "Download prebuilt Rust library" step
           pushd flutter
           flutter build apk --release --target-platform android-arm --split-per-abi
           mv build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk ../rustdesk-${{ env.VERSION }}-armv7.apk

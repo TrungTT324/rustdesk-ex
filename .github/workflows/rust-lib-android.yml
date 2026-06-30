@@ -1,0 +1,196 @@
+name: Build Rust Library (Android)
+
+# Builds librustdesk.so (+ matching libc++_shared.so) for each Android arch and
+# publishes them to a fixed-tag release, so Flutter-only workflows (e.g. Fast
+# Android Build) can download a prebuilt library instead of compiling Rust.
+#
+# Caution: a Flutter workflow that consumes these assets will use whatever was
+# published here, even if src/ has changed since. Re-run this workflow after
+# any Rust/hbb_common change before relying on it for a Flutter-only build.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write # required by softprops/action-gh-release@v1 to create/upload releases
+
+env:
+  RUST_VERSION: "1.75"
+  CARGO_NDK_VERSION: "3.1.2"
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
+  NDK_VERSION: "r28c"
+  TAG_NAME: "rust-lib-android"
+
+jobs:
+  generate-bridge:
+    uses: ./.github/workflows/bridge.yml
+
+  build-rust-lib:
+    needs: [generate-bridge]
+    name: build librustdesk.so ${{ matrix.job.target }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - {
+              target: aarch64-linux-android,
+              android_target: arm64-v8a,
+              ndk_script: ndk_arm64.sh,
+              ndk_sysroot_dir: aarch64-linux-android,
+            }
+          - {
+              target: armv7-linux-androideabi,
+              android_target: armeabi-v7a,
+              ndk_script: ndk_arm.sh,
+              ndk_sysroot_dir: arm-linux-androideabi,
+            }
+          - {
+              target: x86_64-linux-android,
+              android_target: x86_64,
+              ndk_script: ndk_x64.sh,
+              ndk_sysroot_dir: x86_64-linux-android,
+            }
+    steps:
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+               clang \
+               cmake \
+               curl \
+               gcc-multilib \
+               git \
+               g++ \
+               g++-multilib \
+               libayatana-appindicator3-dev \
+               libasound2-dev \
+               libc6-dev \
+               libclang-dev \
+               libunwind-dev \
+               libgstreamer1.0-dev \
+               libgstreamer-plugins-base1.0-dev \
+               libgtk-3-dev \
+               libpam0g-dev \
+               libpulse-dev \
+               libva-dev \
+               libxcb-randr0-dev \
+               libxcb-shape0-dev \
+               libxcb-xfixes0-dev \
+               libxdo-dev \
+               libxfixes-dev \
+               llvm-dev \
+               nasm \
+               ninja-build \
+               pkg-config \
+               tree \
+               wget
+
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: ${{ env.NDK_VERSION }}
+          add-to-path: true
+
+      - name: Setup vcpkg with Github Actions binary cache
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: /opt/artifacts/vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
+        run: |
+          if ! ./flutter/build_android_deps.sh "${{ matrix.job.android_target }}"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
+              echo "$_1:"
+              echo "======"
+              cat "$_1"
+              echo "======"
+              echo ""
+            done
+            exit 1
+          fi
+        shell: bash
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@master
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: rustdesk-lib-cache-android
+          key: ${{ matrix.job.target }}
+
+      - name: Build rustdesk lib
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          rustup target add ${{ matrix.job.target }}
+          cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }} --locked
+          ./flutter/${{ matrix.job.ndk_script }}
+          mkdir -p ./dist
+          cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so ./dist/librustdesk-${{ matrix.job.target }}.so
+          cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/${{ matrix.job.ndk_sysroot_dir }}/libc++_shared.so ./dist/libcxx_shared-${{ matrix.job.target }}.so
+
+      - name: Upload prebuilt library
+        uses: actions/upload-artifact@master
+        with:
+          name: rust-lib-${{ matrix.job.target }}
+          path: ./dist/*
+
+  publish-rust-lib:
+    needs: [build-rust-lib]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download all prebuilt libraries
+        uses: actions/download-artifact@master
+        with:
+          pattern: rust-lib-*
+          path: ./dist
+          merge-multiple: true
+
+      - name: Publish prebuilt libraries
+        uses: softprops/action-gh-release@v1
+        with:
+          prerelease: true
+          tag_name: ${{ env.TAG_NAME }}
+          body: |
+            Prebuilt librustdesk.so + libc++_shared.so for Android (aarch64, armv7, x86_64).
+            Source commit: ${{ github.sha }}
+            Built from generate-bridge run of this workflow (flutter_rust_bridge artifacts match this commit).
+          files: |
+            ./dist/*
