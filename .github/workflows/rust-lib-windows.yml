@@ -1,0 +1,128 @@
+name: Build Rust Library (Windows)
+
+# Builds target/release/librustdesk.dll and publishes it to a fixed-tag
+# release, so a Flutter-only workflow (e.g. Fast Windows Build) can download
+# it instead of compiling Rust + vcpkg/FFmpeg from scratch.
+#
+# Caution: a Flutter workflow that consumes this asset will use whatever was
+# published here, even if src/ has changed since. Re-run this workflow after
+# any Rust/hbb_common change before relying on it for a Flutter-only build.
+#
+# Note: build.py always rebuilds libs/virtual_display/dylib itself (it is not
+# gated by --skip-cargo), so that small native dependency still compiles in
+# the consuming workflow - only the much heavier main `cargo build --features
+# hwcodec,vram,flutter --lib --release` (which needs the full vcpkg/FFmpeg
+# toolchain) is skipped there.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write # required by softprops/action-gh-release@v1 to create/upload releases
+
+env:
+  SCITER_RUST_VERSION: "1.75"
+  LLVM_VERSION: "15.0.6"
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
+  TAG_NAME: "rust-lib-windows"
+
+jobs:
+  generate-bridge:
+    uses: ./.github/workflows/bridge.yml
+
+  build-rust-lib:
+    needs: [generate-bridge]
+    name: build librustdesk.dll x86_64-pc-windows-msvc
+    runs-on: windows-2022
+    steps:
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@master
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@v1
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.SCITER_RUST_VERSION }}
+          targets: x86_64-pc-windows-msvc
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: windows-2022
+
+      - name: Setup vcpkg with Github Actions binary cache
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: C:\vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
+        env:
+          VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
+        run: |
+          if ! $VCPKG_ROOT/vcpkg \
+            install \
+            --triplet x64-windows-static \
+            --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
+              echo "$_1:"
+              echo "======"
+              cat "$_1"
+              echo "======"
+              echo ""
+            done
+            exit 1
+          fi
+        shell: bash
+
+      - name: Build librustdesk.dll
+        run: cargo build --features hwcodec,vram,flutter --lib --release
+
+      - name: Upload prebuilt library
+        uses: actions/upload-artifact@master
+        with:
+          name: rust-lib-x86_64-pc-windows-msvc
+          path: target/release/librustdesk.dll
+
+  publish-rust-lib:
+    needs: [build-rust-lib]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download prebuilt library
+        uses: actions/download-artifact@master
+        with:
+          name: rust-lib-x86_64-pc-windows-msvc
+          path: ./dist
+
+      - name: Publish prebuilt library
+        uses: softprops/action-gh-release@v1
+        with:
+          prerelease: true
+          tag_name: ${{ env.TAG_NAME }}
+          body: |
+            Prebuilt librustdesk.dll for Windows x86_64 (features: hwcodec,vram,flutter).
+            Source commit: ${{ github.sha }}
+            Built from generate-bridge run of this workflow (flutter_rust_bridge artifacts match this commit).
+          files: |
+            ./dist/librustdesk.dll
