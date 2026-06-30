@@ -112,11 +112,15 @@ jobs:
           sed -i -e 's/_setFramesEnabledState(false);/\/\/_setFramesEnabledState(false);/g' ../packages/flutter/lib/src/scheduler/binding.dart
           grep -n '_setFramesEnabledState(false);' ../packages/flutter/lib/src/scheduler/binding.dart || true
 
-      - name: Set minimum macOS deployment target
+      - name: Set minimum macOS deployment target and arm64-only ARCHS
         run: |
           MIN_MACOS_VERSION="${{ env.MIN_MACOS_VERSION }}"
           sed -i -e "s/platform :osx, '.*'/platform :osx, '${MIN_MACOS_VERSION}'/" flutter/macos/Podfile
           sed -i -e "s/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = ${MIN_MACOS_VERSION};/" flutter/macos/Runner.xcodeproj/project.pbxproj
+          # the prebuilt liblibrustdesk.dylib is arm64-only (this workflow targets Apple Silicon
+          # only), but ARCHS defaults to "$(ARCHS_STANDARD)" which makes Xcode also try to link
+          # an x86_64 slice and fail. Force arm64-only.
+          sed -i -e 's/ARCHS = "\$(ARCHS_STANDARD)";/ARCHS = arm64;/' flutter/macos/Runner.xcodeproj/project.pbxproj
 
       - name: Restore bridge files
         uses: actions/download-artifact@master
