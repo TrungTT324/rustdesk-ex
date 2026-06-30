@@ -26,7 +26,7 @@ concurrency:
 env:
   SCITER_RUST_VERSION: "1.75"
   LLVM_VERSION: "15.0.6"
-  FLUTTER_VERSION: "3.24.5"
+  FLUTTER_VERSION: "3.41.7" # bumped from 3.24.5: pubspec.yaml deps (sqflite etc.) need Dart >=3.7+, same root cause as the Android build fix
   TAG_NAME: "fast-build-windows"
   RUST_LIB_TAG_NAME: "rust-lib-windows" # published by rust-lib-windows.yml; run it first after any Rust/hbb_common change
   VERSION: "1.4.6"
@@ -92,9 +92,11 @@ jobs:
       - name: Patch flutter
         shell: bash
         run: |
-          cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff $(dirname $(dirname $(which flutter)))
-          cd $(dirname $(dirname $(which flutter)))
-          [[ "3.24.5" == ${{env.FLUTTER_VERSION}} ]] && git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+          if [[ "${{ env.FLUTTER_VERSION }}" == "3.24.5" ]]; then
+            cp .github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff $(dirname $(dirname $(which flutter)))
+            cd $(dirname $(dirname $(which flutter)))
+            git apply flutter_3.24.4_dropdown_menu_enableFilter.diff
+          fi
 
       # only needed to rebuild libs/virtual_display/dylib (build.py always rebuilds
       # it, no vcpkg required); the heavy main lib build is skipped entirely.
