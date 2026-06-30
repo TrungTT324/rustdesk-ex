@@ -80,14 +80,14 @@ jobs:
           channel: "stable"
           flutter-version: ${{ env.FLUTTER_VERSION }}
 
-      # https://github.com/flutter/flutter/issues/155685
-      - name: Replace engine with rustdesk custom flutter engine
+      # the rustdesk custom engine (https://github.com/flutter/flutter/issues/155685)
+      # was built against Flutter 3.24.x and breaks flutter_assemble under 3.41.7
+      # (MSB8066 building flutter_windows.dll). Try the stock 3.41.7 engine instead -
+      # the upstream issue may already be fixed in this Flutter version.
+      - name: flutter doctor
         run: |
           flutter doctor -v
           flutter precache --windows
-          Invoke-WebRequest -Uri https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip -OutFile windows-x64-release.zip
-          Expand-Archive -Path windows-x64-release.zip -DestinationPath windows-x64-release
-          mv -Force windows-x64-release/*  C:/hostedtoolcache/windows/flutter/stable-${{ env.FLUTTER_VERSION }}-x64/bin/cache/artifacts/engine/windows-x64-release/
 
       - name: Patch flutter
         shell: bash
