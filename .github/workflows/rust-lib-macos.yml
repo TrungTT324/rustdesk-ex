@@ -1,0 +1,145 @@
+name: Build Rust Library (macOS)
+
+# Builds target/release/liblibrustdesk.dylib + target/release/service for
+# aarch64-apple-darwin (Apple Silicon only) and publishes them to a fixed-tag
+# release, so a Flutter-only workflow (e.g. Fast macOS Build) can download
+# them instead of compiling Rust + vcpkg/FFmpeg from scratch.
+#
+# Intel (x86_64-apple-darwin) is intentionally not built here.
+#
+# Caution: a Flutter workflow that consumes these assets will use whatever was
+# published here, even if src/ has changed since. Re-run this workflow after
+# any Rust/hbb_common change before relying on it for a Flutter-only build.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write # required by softprops/action-gh-release@v1 to create/upload releases
+
+env:
+  MAC_RUST_VERSION: "1.81" # required for macos, https://github.com/yury/cidre requires 1.81
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  VCPKG_COMMIT_ID: "120deac3062162151622ca4860575a33844ba10b"
+  TAG_NAME: "rust-lib-macos"
+  MIN_MACOS_VERSION: "12.3" # required by --screencapturekit, matches build-for-macOS's aarch64 matrix entry
+
+jobs:
+  generate-bridge:
+    uses: ./.github/workflows/bridge.yml
+
+  build-rust-lib:
+    needs: [generate-bridge]
+    name: build liblibrustdesk.dylib aarch64-apple-darwin
+    runs-on: macos-14
+    steps:
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@master
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - name: Install build runtime
+        run: |
+          brew install llvm
+          if command -v pkg-config &>/dev/null; then
+              echo "pkg-config is already installed"
+          else
+              brew install pkg-config
+          fi
+
+      - name: Install NASM
+        run: |
+          # Install NASM 2.16.x from official release.
+          # Do NOT use `brew install nasm` which installs NASM 3.x.
+          # NASM 3.x is a complete rewrite with incompatible CLI options and removed features.
+          # aom and other multimedia libraries require NASM 2.x for x86/x86_64 assembly.
+          wget https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/macosx/nasm-2.16.03-macosx.zip
+          unzip nasm-2.16.03-macosx.zip
+          sudo cp nasm-2.16.03/nasm /usr/local/bin/nasm
+          nasm --version
+
+      - name: Set minimum macOS deployment target
+        run: |
+          sed -i -e "s/osx_minimum_system_version = \"[0-9]*.[0-9]*\"/osx_minimum_system_version = \"${{ env.MIN_MACOS_VERSION }}\"/" Cargo.toml
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.MAC_RUST_VERSION }}
+          targets: aarch64-apple-darwin
+          components: "rustfmt"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: macos-14
+
+      - name: Setup vcpkg with Github Actions binary cache
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
+        run: |
+          if ! $VCPKG_ROOT/vcpkg \
+            install \
+            --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
+              echo "$_1:"
+              echo "======"
+              cat "$_1"
+              echo "======"
+              echo ""
+            done
+            exit 1
+          fi
+          head -n 100 "${VCPKG_ROOT}/buildtrees/ffmpeg/build-arm64-osx-rel-out.log" || true
+
+      - name: Build librustdesk
+        run: |
+          MACOSX_DEPLOYMENT_TARGET=${{ env.MIN_MACOS_VERSION }} cargo build --features hwcodec,flutter,unix-file-copy-paste,screencapturekit --release
+          mkdir -p ./dist
+          cp target/release/liblibrustdesk.dylib ./dist/
+          cp target/release/service ./dist/
+
+      - name: Upload prebuilt library
+        uses: actions/upload-artifact@master
+        with:
+          name: rust-lib-aarch64-apple-darwin
+          path: ./dist/*
+
+  publish-rust-lib:
+    needs: [build-rust-lib]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download prebuilt library
+        uses: actions/download-artifact@master
+        with:
+          name: rust-lib-aarch64-apple-darwin
+          path: ./dist
+
+      - name: Publish prebuilt library
+        uses: softprops/action-gh-release@v1
+        with:
+          prerelease: true
+          tag_name: ${{ env.TAG_NAME }}
+          body: |
+            Prebuilt liblibrustdesk.dylib + service binary for macOS aarch64 (Apple Silicon only; features: hwcodec,flutter,unix-file-copy-paste,screencapturekit).
+            Source commit: ${{ github.sha }}
+            Built from generate-bridge run of this workflow (flutter_rust_bridge artifacts match this commit).
+          files: |
+            ./dist/liblibrustdesk.dylib
+            ./dist/service

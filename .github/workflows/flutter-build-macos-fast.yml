@@ -1,0 +1,184 @@
+name: Fast macOS Build
+
+# Mirrors the build-for-macOS (aarch64-apple-darwin) job in flutter-build.yml
+# but skips vcpkg setup + the main `cargo build --release` by downloading a
+# prebuilt liblibrustdesk.dylib + service binary from the "rust-lib-macos"
+# release (published by rust-lib-macos.yml) instead.
+#
+# Apple Silicon (aarch64-apple-darwin) only - Intel is intentionally not
+# built here.
+#
+# Unlike the Windows split, build.py's build_flutter_dmg has no unconditional
+# extra cargo build, so --skip-cargo means no Rust toolchain is needed at all
+# in this workflow.
+#
+# Caution: run rust-lib-macos.yml again after any Rust/hbb_common change, or
+# this workflow will package a stale liblibrustdesk.dylib. The "Download
+# prebuilt Rust library" step prints the source commit it was built from.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write # required by softprops/action-gh-release@v1 to create/upload releases
+
+concurrency:
+  group: fast-macos-build
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: "3.41.7" # bumped from 3.24.5: pubspec.yaml deps (sqflite etc.) need Dart >=3.7+, same root cause as the Android/Windows build fixes
+  TAG_NAME: "fast-build-macos"
+  RUST_LIB_TAG_NAME: "rust-lib-macos" # published by rust-lib-macos.yml; run it first after any Rust/hbb_common change
+  VERSION: "1.4.6"
+  MIN_MACOS_VERSION: "12.3" # required by --screencapturekit
+  UPLOAD_ARTIFACT: "true"
+  MACOS_P12_BASE64: "${{ secrets.MACOS_P12_BASE64 }}"
+
+jobs:
+  generate-bridge:
+    uses: ./.github/workflows/bridge.yml
+
+  build-for-macos-fast:
+    name: aarch64-apple-darwin (fast)
+    needs: [generate-bridge]
+    runs-on: macos-14
+    steps:
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v6
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Import the codesign cert
+        if: env.MACOS_P12_BASE64 != null
+        uses: apple-actions/import-codesign-certs@v1
+        with:
+          p12-file-base64: ${{ secrets.MACOS_P12_BASE64 }}
+          p12-password: ${{ secrets.MACOS_P12_PASSWORD }}
+          keychain: rustdesk
+
+      - name: Check sign and import sign key
+        if: env.MACOS_P12_BASE64 != null
+        run: |
+          security default-keychain -s rustdesk.keychain
+          security find-identity -v
+
+      - name: Import notarize key
+        if: env.MACOS_P12_BASE64 != null
+        uses: timheuer/base64-to-file@v1.2
+        with:
+          fileName: rustdesk.json
+          fileDir: ${{ github.workspace }}
+          encodedString: ${{ secrets.MACOS_NOTARIZE_JSON }}
+
+      - name: Install rcodesign tool
+        if: env.MACOS_P12_BASE64 != null
+        shell: bash
+        run: |
+          pushd /tmp
+          wget https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F0.22.0/apple-codesign-0.22.0-macos-universal.tar.gz
+          tar -zxvf apple-codesign-0.22.0-macos-universal.tar.gz
+          mv apple-codesign-0.22.0-macos-universal/rcodesign /usr/local/bin
+          popd
+
+      - name: Install build runtime
+        run: brew install create-dmg
+
+      - name: Install flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Patch flutter
+        run: |
+          if [[ "${{ env.FLUTTER_VERSION }}" == "3.24.5" ]]; then
+            cd $(dirname $(dirname $(which flutter)))
+            git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
+          fi
+
+      - name: Workaround for flutter issue
+        shell: bash
+        run: |
+          cd "$(dirname "$(which flutter)")"
+          # https://github.com/flutter/flutter/issues/133533
+          sed -i -e 's/_setFramesEnabledState(false);/\/\/_setFramesEnabledState(false);/g' ../packages/flutter/lib/src/scheduler/binding.dart
+          grep -n '_setFramesEnabledState(false);' ../packages/flutter/lib/src/scheduler/binding.dart || true
+
+      - name: Set minimum macOS deployment target
+        run: |
+          MIN_MACOS_VERSION="${{ env.MIN_MACOS_VERSION }}"
+          sed -i -e "s/platform :osx, '.*'/platform :osx, '${MIN_MACOS_VERSION}'/" flutter/macos/Podfile
+          sed -i -e "s/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = ${MIN_MACOS_VERSION};/" flutter/macos/Runner.xcodeproj/project.pbxproj
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@master
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - name: Download prebuilt Rust library
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Using prebuilt library from release '${{ env.RUST_LIB_TAG_NAME }}':"
+          gh release view "${{ env.RUST_LIB_TAG_NAME }}" -R "${{ github.repository }}" --json body -q .body
+          echo "(verify the source commit above still matches src/ before trusting this build)"
+          mkdir -p target/release
+          gh release download "${{ env.RUST_LIB_TAG_NAME }}" -R "${{ github.repository }}" -p "liblibrustdesk.dylib" -p "service" -D target/release --clobber
+          chmod +x target/release/service
+
+      - name: Build rustdesk
+        run: ./build.py --flutter --hwcodec --unix-file-copy-paste --screencapturekit --skip-cargo
+
+      - name: create unsigned dmg
+        if: env.UPLOAD_ARTIFACT == 'true'
+        run: |
+          CREATE_DMG="$(command -v create-dmg)"
+          CREATE_DMG="$(readlink -f "$CREATE_DMG")"
+          sed -i -e 's/MAXIMUM_UNMOUNTING_ATTEMPTS=3/MAXIMUM_UNMOUNTING_ATTEMPTS=7/' "$CREATE_DMG"
+          create-dmg --icon "RustDesk.app" 200 190 --hide-extension "RustDesk.app" --window-size 800 400 --app-drop-link 600 185 rustdesk-${{ env.VERSION }}-aarch64.dmg ./flutter/build/macos/Build/Products/Release/RustDesk.app
+
+      - name: Upload unsigned macOS app
+        if: env.UPLOAD_ARTIFACT == 'true'
+        uses: actions/upload-artifact@master
+        with:
+          name: rustdesk-unsigned-macos-aarch64-fast
+          path: rustdesk-${{ env.VERSION }}-aarch64.dmg
+
+      - name: Codesign app and create signed dmg
+        if: env.MACOS_P12_BASE64 != null && env.UPLOAD_ARTIFACT == 'true'
+        run: |
+          CREATE_DMG="$(command -v create-dmg)"
+          CREATE_DMG="$(readlink -f "$CREATE_DMG")"
+          sed -i -e 's/MAXIMUM_UNMOUNTING_ATTEMPTS=3/MAXIMUM_UNMOUNTING_ATTEMPTS=7/' "$CREATE_DMG"
+          security default-keychain -s rustdesk.keychain
+          security unlock-keychain -p ${{ secrets.MACOS_P12_PASSWORD }} rustdesk.keychain
+          rm -rf *.dmg || true
+          codesign --force --options runtime -s ${{ secrets.MACOS_CODESIGN_IDENTITY }} --deep --strict ./flutter/build/macos/Build/Products/Release/RustDesk.app -vvv
+          create-dmg --icon "RustDesk.app" 200 190 --hide-extension "RustDesk.app" --window-size 800 400 --app-drop-link 600 185 rustdesk-${{ env.VERSION }}.dmg ./flutter/build/macos/Build/Products/Release/RustDesk.app
+          codesign --force --options runtime -s ${{ secrets.MACOS_CODESIGN_IDENTITY }} --deep --strict rustdesk-${{ env.VERSION }}.dmg -vvv
+          rcodesign notary-submit --api-key-path ${{ github.workspace }}/rustdesk.json --staple rustdesk-${{ env.VERSION }}.dmg
+
+      - name: Rename rustdesk
+        if: env.UPLOAD_ARTIFACT == 'true'
+        run: |
+          for name in rustdesk*??.dmg; do
+              mv "$name" "${name%%.dmg}-aarch64.dmg"
+          done
+
+      - name: Publish DMG package
+        if: env.UPLOAD_ARTIFACT == 'true'
+        uses: softprops/action-gh-release@v1
+        with:
+          prerelease: true
+          tag_name: ${{ env.TAG_NAME }}
+          files: |
+            rustdesk*-aarch64.dmg
